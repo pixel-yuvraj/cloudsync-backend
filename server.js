@@ -86,16 +86,16 @@ app.post('/upload/call_logs', async (req, res) => {
 });
 
 // Endpoint to receive health checks
-app.post('/upload/health_check', async (req, res) => {
-    try {
-        const { message } = req.body;
-        console.log('Health check received:', message);
-        res.status(200).json({ message: 'Health check received successfully' });
-    } catch (error) {
-        console.error('Error receiving health check:', error);
-        res.status(500).json({ message: 'Error receiving health check', error: error.message });
-    }
-});
+app.get('/upload/health_check', (req, res) => {
+    console.log('Health check ping received');
+    res.status(200).send('OK');
+  });
+  
+  app.post('/upload/health_check', (req, res) => {
+    const { message } = req.body;
+    console.log(`Health check received: ${message}`);
+    res.status(200).send('Health check received');
+  });
 
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
