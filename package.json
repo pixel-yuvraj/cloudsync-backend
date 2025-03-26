@@ -13,6 +13,7 @@
     "@googleapis/drive": "^11.0.0",
     "express": "^4.21.2",
     "google-auth-library": "^9.15.1",
+    "googleapis": "^148.0.0",
     "multer": "^1.4.5-lts.2"
   }
 }
